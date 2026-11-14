@@ -75,7 +75,7 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
 <div class="wrap">
   <header>
     <h1>Barrido <span>Escáner</span></h1>
-    <p>Una sola línea del sensor por cuadro, apilada como en un escáner de mano. Sin filtros. <span style="font-family:var(--f-mono);font-size:12px;color:var(--glass)">v5</span></p>
+    <p>Una sola línea del sensor por cuadro, apilada como en un escáner de mano. Sin filtros. <span style="font-family:var(--f-mono);font-size:12px;color:var(--glass)">v6</span></p>
   </header>
 
   <section style="min-width:0">
@@ -106,7 +106,8 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     <div class="panel">
       <h2>Sensor</h2>
       <div class="row"><label for="mode">Modo</label><select id="mode"><option value="manual">Manual (movés el celu)</option><option value="auto">Auto (la línea recorre la imagen)</option></select><span></span></div>
-      <div class="row" id="durRow" hidden><label for="dur">Duración</label><input type="range" id="dur" min="2" max="40" value="8"><output for="dur"></output></div>
+      <div class="row" id="durRow" hidden><label for="speed">Velocidad</label><input type="range" id="speed" min="5" max="600" step="5" value="60"><output for="speed"></output></div>
+      <p class="msg" id="speedHint" style="color:var(--muted);font-size:13px" hidden>Líneas por segundo: cuántas filas de la cámara avanza la línea por segundo.</p>
       <div class="row" id="revRow" hidden><label for="rev">Sentido</label><select id="rev"><option value="0">Arriba → abajo / izq. → der.</option><option value="1">Abajo → arriba / der. → izq.</option></select><span></span></div>
       <div class="row"><label for="dir">Línea</label><select id="dir"><option value="h">Horizontal (barrer hacia abajo)</option><option value="v">Vertical (barrer hacia el costado)</option></select><span></span></div>
       <div class="row"><label for="pos">Posición</label><input type="range" id="pos" min="0" max="100" value="50"><output for="pos"></output></div>
@@ -137,20 +138,26 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
   const cam = $('cam');
   const msg = (t, err) => { $('msg').textContent = t || ''; $('msg').classList.toggle('err', !!err); };
 
-  ['pos','thick','len','dur'].forEach(id => {
+  let auto = false, autoSpeed = 60, autoRev = false, autoT0 = 0, autoAxis = 1, autoP = 0, slitRaf = 0, savedPos = 50, camFps = 30;
+  ['pos','thick','len','speed'].forEach(id => {
     const el = $(id), o = el.parentElement.querySelector('output');
-    const show = () => { o.textContent = el.value + (id === 'pos' ? '%' : id === 'dur' ? ' s' : ''); placeSlit(); };
+    const show = () => { o.textContent = el.value + (id === 'pos' ? '%' : id === 'speed' ? ' l/s' : ''); placeSlit(); updateHint(); };
     el.addEventListener('input', show); show();
   });
   // Auto-barrido: la línea recorre el cuadro a velocidad constante; el celu queda quieto.
   const isAuto = () => $('mode').value === 'auto';
   function syncMode() {
     const a = isAuto();
-    $('durRow').hidden = !a; $('revRow').hidden = !a;
+    $('durRow').hidden = !a; $('revRow').hidden = !a; $('speedHint').hidden = !a;
     $('len').closest('.row').hidden = a;   // en Auto el largo lo define la duración
   }
   $('mode').addEventListener('change', syncMode); syncMode();
-  let auto = false, autoDur = 8, autoRev = false, autoT0 = 0, savedPos = 50;
+  // velocidad "natural": la línea avanza justo lo que lee el sensor en cada cuadro, así lo quieto no se estira ni se comprime
+  function updateHint() {
+    const h = $('speedHint'); if (!h) return;
+    const nat = Math.round(camFps * +$('thick').value);
+    h.textContent = `Líneas por segundo: cuántas filas de la cámara avanza la línea. Con esta cámara (${Math.round(camFps)} fps), ${nat} l/s deja lo quieto sin deformar; más lento lo estira, más rápido lo comprime.`;
+  }
   $('dir').addEventListener('change', placeSlit);
 
   let stream = null, facing = 'environment', scanning = false, src = null;
@@ -158,9 +165,9 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
   let wakeLock = null, filled = 0, fpsCount = 0, fpsT = 0, fps = 0;
 
   // Ubica la línea del visor sobre la imagen real (respeta el encuadre "contain").
-  function placeSlit() {
+  function placeSlit(pOverride) {
     const s = $('slit'), v = $('viewer');
-    const d = $('dir').value, p = +$('pos').value / 100;
+    const d = $('dir').value, p = typeof pOverride === 'number' ? pOverride : +$('pos').value / 100;
     s.className = 'slit ' + d;
     const vw = cam.videoWidth || 3, vh = cam.videoHeight || 4;
     const W = v.clientWidth, H = v.clientHeight, sc = Math.min(W / vw, H / vh);
@@ -194,6 +201,7 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     const caps = track.getCapabilities ? track.getCapabilities() : {};
     $('torch').disabled = !caps.torch; $('torch').setAttribute('aria-pressed', 'false');
     const st = track.getSettings();
+    camFps = st.frameRate || 30; updateHint();
     // zoom del sensor, si el navegador lo expone
     const z = $('zoom');
     if (caps.zoom && caps.zoom.max > caps.zoom.min) {
@@ -254,8 +262,14 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     dir = $('dir').value; thick = +$('thick').value; total = +$('len').value;
     auto = isAuto(); autoT0 = 0;
     if (auto) {
-      autoDur = +$('dur').value; autoRev = $('rev').value === '1'; savedPos = +$('pos').value;
-      total = Math.ceil(autoDur * 65) + 10;   // lugar de sobra hasta 60 fps; al final se recorta
+      autoSpeed = +$('speed').value; autoRev = $('rev').value === '1'; savedPos = +$('pos').value;
+      autoAxis = dir === 'h' ? vh : vw;
+      total = Math.ceil((autoAxis - thick) / autoSpeed * 65) + 10;   // lugar de sobra hasta 60 fps; al final se recorta
+      autoP = autoRev ? 1 : 0;
+      // la línea del visor se dibuja a la frecuencia de la pantalla, aparte de los cuadros de la cámara
+      cancelAnimationFrame(slitRaf);
+      const drawSlit = () => { if (!scanning || !auto) return; placeSlit(autoPos(performance.now()).p); slitRaf = requestAnimationFrame(drawSlit); };
+      slitRaf = requestAnimationFrame(drawSlit);
     }
     if (dir === 'h') { out.width = vw; out.height = total * thick; }
     else { out.width = total * thick; out.height = vh; }
@@ -264,30 +278,37 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     $('empty').hidden = true; row = 0; filled = 0; lastTime = -1; lastFile = null;
   }
 
+  // Auto: posición continua según el tiempo transcurrido y la velocidad en líneas por segundo.
+  function autoPos(now) {
+    if (!autoT0) autoT0 = now;
+    const dist = (now - autoT0) / 1000 * autoSpeed, span = autoAxis - thick;
+    if (dist >= span) return { done: true, p: autoRev ? 0 : span / autoAxis, px: autoRev ? 0 : span };
+    const px = autoRev ? span - dist : dist;
+    return { done: false, p: px / autoAxis, px };
+  }
+
   // Un cuadro nuevo = una lectura del sensor.
   function readLine(video) {
     const vw = video.videoWidth, vh = video.videoHeight;
-    let p = +$('pos').value / 100;
+    let p = +$('pos').value / 100, px = null;
     if (auto) {
-      const now = performance.now(); if (!autoT0) autoT0 = now;
-      const k = (now - autoT0) / (autoDur * 1000);
-      if (k >= 1) return false;
-      p = autoRev ? 1 - k : k;
-      $('pos').value = Math.round(p * 100); placeSlit();
-      if (row >= total) return false;
+      const a = autoPos(performance.now());
+      if (a.done || row >= total) return false;
+      p = a.p; px = a.px;   // posición en píxeles con decimales: avanza parejo, sin saltos de 1%
+      placeSlit(p);         // respaldo por si la pantalla no está dibujando cuadros
     }
     if (dir === 'h') {
-      const sy = Math.min(vh - thick, Math.floor(p * vh));
+      const sy = px ?? Math.min(vh - thick, Math.floor(p * vh));
       ctx.drawImage(video, 0, sy, vw, thick, 0, row * thick, out.width, thick);
     } else {
-      const sx = Math.min(vw - thick, Math.floor(p * vw));
+      const sx = px ?? Math.min(vw - thick, Math.floor(p * vw));
       ctx.drawImage(video, sx, 0, thick, vh, row * thick, 0, thick, out.height);
     }
     row++; filled = row;
     const now = performance.now(); fpsCount++;
     if (now - fpsT > 500) { fps = Math.round(fpsCount * 1000 / (now - fpsT)); fpsCount = 0; fpsT = now; }
     $('stat').textContent = auto
-      ? `● AUTO ${Math.round((performance.now() - autoT0) / 1000)}/${autoDur} s · ${row} líneas · ${fps} fps`
+      ? `● AUTO ${Math.round(p * 100)}% · ${row} líneas · ${fps} fps`
       : `● ${row}/${total} líneas · ${fps} fps`;
     // que la hoja siga a la línea nueva
     const sh = $('sheet');
@@ -322,6 +343,7 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     if (src && src !== cam) { src.pause(); URL.revokeObjectURL(src.src); }
     src = null;
     try { wakeLock?.release(); } catch {} wakeLock = null;
+    cancelAnimationFrame(slitRaf);
     if (auto) { $('pos').value = savedPos; $('pos').dispatchEvent(new Event('input')); }
     // recortar lo que no se llegó a llenar
     if (filled && filled < total) {
@@ -339,7 +361,7 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     go.textContent = scanning ? 'Detener' : (filled ? 'Escanear de nuevo' : 'Escanear');
     go.classList.toggle('stop', scanning);
     $('stat').classList.toggle('rec', scanning);
-    ['camSel','save','vidBtn','dir','thick','len','mode','dur','rev','pos'].forEach(id => $(id).disabled = scanning || (id === 'save' && !filled));
+    ['camSel','save','vidBtn','dir','thick','len','mode','speed','rev','pos'].forEach(id => $(id).disabled = scanning || (id === 'save' && !filled));
     $('save').classList.toggle('ready', !scanning && !!filled);
   }
 
