@@ -189,11 +189,28 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
       $('zoomRow').hidden = false; z.dispatchEvent(new Event('input'));
     } else $('zoomRow').hidden = true;
     await listCameras(st.deviceId);
+    if (!$('zoomRow').hidden) $('zoom').dispatchEvent(new Event('input'));
     $('stat').textContent = `${cam.videoWidth}×${cam.videoHeight} · ${Math.round(st.frameRate || 0) || '?'} fps`;
     $('stat').classList.remove('rec');
     return true;
   }
   function stopStream() { stream?.getTracks().forEach(t => t.stop()); stream = null; }
+
+  // Nombres de iPhone (inglés o español) → nombres con el zoom de la app Cámara.
+  // zoomScale: en las cámaras "automáticas" que arrancan en el ultra gran angular, el zoom 1 del navegador equivale a 0.5×.
+  function describeCam(label, i) {
+    const l = (label || '').toLowerCase();
+    const has = (...w) => w.some(x => l.includes(x));
+    if (has('front', 'frontal', 'delantera')) return { name: 'Frontal (selfie)', order: 9, zoomScale: 1 };
+    if (has('triple')) return { name: 'Auto 0.5× a tele (cambia de lente sola)', order: 5, zoomScale: 0.5 };
+    if (has('dual wide', 'doble gran angular', 'dual gran angular')) return { name: 'Auto 0.5× a 1× (cambia de lente sola)', order: 6, zoomScale: 0.5 };
+    if (has('dual', 'doble')) return { name: 'Auto 1× a tele (cambia de lente sola)', order: 7, zoomScale: 1 };
+    if (has('ultra')) return { name: '0.5× Ultra gran angular', order: 1, zoomScale: 0.5 };
+    if (has('telephoto', 'teleobjetivo')) return { name: 'Tele (3× o 5× según el modelo)', order: 3, zoomScale: 1 };
+    if (has('back camera', 'cámara trasera', 'camara trasera')) return { name: '1× Principal', order: 2, zoomScale: 1 };
+    return { name: label || ('Cámara ' + (i + 1)), order: 8, zoomScale: 1 };
+  }
+  const zoomScale = () => +($('camSel').selectedOptions[0]?.dataset.zs || 1);
 
   // Lista todas las cámaras (en iPhone: gran angular, ultra gran angular, teleobjetivo, frontal…)
   async function listCameras(currentId) {
@@ -202,11 +219,13 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     if (!devs.length) return;
     const sel = $('camSel');
     sel.innerHTML = '';
-    devs.forEach((d, i) => {
-      const o = document.createElement('option');
-      o.value = d.deviceId; o.textContent = d.label || ('Cámara ' + (i + 1));
-      sel.appendChild(o);
-    });
+    devs.map((d, i) => ({ d, info: describeCam(d.label, i) }))
+      .sort((a, b) => a.info.order - b.info.order)
+      .forEach(({ d, info }) => {
+        const o = document.createElement('option');
+        o.value = d.deviceId; o.textContent = info.name; o.dataset.zs = info.zoomScale;
+        sel.appendChild(o);
+      });
     if (currentId && devs.some(d => d.deviceId === currentId)) sel.value = currentId;
     try { localStorage.setItem('barrido-cam', sel.value); } catch {}
   }
@@ -301,7 +320,8 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     await openCamera();
   };
   $('zoom').addEventListener('input', async () => {
-    const z = $('zoom'); z.parentElement.querySelector('output').textContent = (+z.value).toFixed(1) + '×';
+    const z = $('zoom'), shown = +z.value * zoomScale();
+    z.parentElement.querySelector('output').textContent = (Math.round(shown * 10) / 10) + '×';
     const track = stream?.getVideoTracks()[0]; if (!track) return;
     try { await track.applyConstraints({ advanced: [{ zoom: +z.value }] }); } catch {}
   });
