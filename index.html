@@ -105,6 +105,9 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
 
     <div class="panel">
       <h2>Sensor</h2>
+      <div class="row"><label for="mode">Modo</label><select id="mode"><option value="manual">Manual (movés el celu)</option><option value="auto">Auto (la línea recorre la imagen)</option></select><span></span></div>
+      <div class="row" id="durRow" hidden><label for="dur">Duración</label><input type="range" id="dur" min="2" max="40" value="8"><output for="dur"></output></div>
+      <div class="row" id="revRow" hidden><label for="rev">Sentido</label><select id="rev"><option value="0">Arriba → abajo / izq. → der.</option><option value="1">Abajo → arriba / der. → izq.</option></select><span></span></div>
       <div class="row"><label for="dir">Línea</label><select id="dir"><option value="h">Horizontal (barrer hacia abajo)</option><option value="v">Vertical (barrer hacia el costado)</option></select><span></span></div>
       <div class="row"><label for="pos">Posición</label><input type="range" id="pos" min="0" max="100" value="50"><output for="pos"></output></div>
       <div class="row"><label for="thick">Alto del sensor</label><input type="range" id="thick" min="1" max="8" value="1"><output for="thick"></output></div>
@@ -134,11 +137,20 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
   const cam = $('cam');
   const msg = (t, err) => { $('msg').textContent = t || ''; $('msg').classList.toggle('err', !!err); };
 
-  ['pos','thick','len'].forEach(id => {
+  ['pos','thick','len','dur'].forEach(id => {
     const el = $(id), o = el.parentElement.querySelector('output');
-    const show = () => { o.textContent = el.value + (id === 'pos' ? '%' : ''); placeSlit(); };
+    const show = () => { o.textContent = el.value + (id === 'pos' ? '%' : id === 'dur' ? ' s' : ''); placeSlit(); };
     el.addEventListener('input', show); show();
   });
+  // Auto-barrido: la línea recorre el cuadro a velocidad constante; el celu queda quieto.
+  const isAuto = () => $('mode').value === 'auto';
+  function syncMode() {
+    const a = isAuto();
+    $('durRow').hidden = !a; $('revRow').hidden = !a;
+    $('len').closest('.row').hidden = a;   // en Auto el largo lo define la duración
+  }
+  $('mode').addEventListener('change', syncMode); syncMode();
+  let auto = false, autoDur = 8, autoRev = false, autoT0 = 0, savedPos = 50;
   $('dir').addEventListener('change', placeSlit);
 
   let stream = null, facing = 'environment', scanning = false, src = null;
@@ -206,7 +218,7 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     if (has('dual wide', 'doble gran angular', 'dual gran angular')) return { name: 'Auto 0.5× a 1× (cambia de lente sola)', order: 6, zoomScale: 0.5 };
     if (has('dual', 'doble')) return { name: 'Auto 1× a tele (cambia de lente sola)', order: 7, zoomScale: 1 };
     if (has('ultra')) return { name: '0.5× Ultra gran angular', order: 1, zoomScale: 0.5 };
-    if (has('telephoto', 'teleobjetivo')) return { name: 'Tele (3× o 5× según el modelo)', order: 3, zoomScale: 1 };
+    if (has('telephoto', 'teleobjetivo')) return { name: '5× Tele', order: 3, zoomScale: 1 };
     if (has('back camera', 'cámara trasera', 'camara trasera')) return { name: '1× Principal', order: 2, zoomScale: 1 };
     return { name: label || ('Cámara ' + (i + 1)), order: 8, zoomScale: 1 };
   }
@@ -240,6 +252,11 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
   // Prepara la hoja según el tamaño real del video y la orientación de la línea.
   function prepareSheet(vw, vh) {
     dir = $('dir').value; thick = +$('thick').value; total = +$('len').value;
+    auto = isAuto(); autoT0 = 0;
+    if (auto) {
+      autoDur = +$('dur').value; autoRev = $('rev').value === '1'; savedPos = +$('pos').value;
+      total = Math.ceil(autoDur * 65) + 10;   // lugar de sobra hasta 60 fps; al final se recorta
+    }
     if (dir === 'h') { out.width = vw; out.height = total * thick; }
     else { out.width = total * thick; out.height = vh; }
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, out.width, out.height);
@@ -249,7 +266,16 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
 
   // Un cuadro nuevo = una lectura del sensor.
   function readLine(video) {
-    const vw = video.videoWidth, vh = video.videoHeight, p = +$('pos').value / 100;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    let p = +$('pos').value / 100;
+    if (auto) {
+      const now = performance.now(); if (!autoT0) autoT0 = now;
+      const k = (now - autoT0) / (autoDur * 1000);
+      if (k >= 1) return false;
+      p = autoRev ? 1 - k : k;
+      $('pos').value = Math.round(p * 100); placeSlit();
+      if (row >= total) return false;
+    }
     if (dir === 'h') {
       const sy = Math.min(vh - thick, Math.floor(p * vh));
       ctx.drawImage(video, 0, sy, vw, thick, 0, row * thick, out.width, thick);
@@ -260,7 +286,9 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     row++; filled = row;
     const now = performance.now(); fpsCount++;
     if (now - fpsT > 500) { fps = Math.round(fpsCount * 1000 / (now - fpsT)); fpsCount = 0; fpsT = now; }
-    $('stat').textContent = `● ${row}/${total} líneas · ${fps} fps`;
+    $('stat').textContent = auto
+      ? `● AUTO ${Math.round((performance.now() - autoT0) / 1000)}/${autoDur} s · ${row} líneas · ${fps} fps`
+      : `● ${row}/${total} líneas · ${fps} fps`;
     // que la hoja siga a la línea nueva
     const sh = $('sheet');
     if (dir === 'h') { const y = row * thick * (out.clientHeight / out.height); if (y > sh.scrollTop + sh.clientHeight - 40) sh.scrollTop = y - sh.clientHeight + 80; }
@@ -286,14 +314,15 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     prepareSheet(cam.videoWidth, cam.videoHeight);
     scanning = true; src = cam; setUI();
     try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
-    msg('Escaneando… mové el celu despacio.');
-    loop(cam, () => stop('Hoja completa.'));
+    msg(auto ? 'Auto-barrido: dejá el celu quieto (apoyado si podés).' : 'Escaneando… mové el celu despacio.');
+    loop(cam, () => stop(auto ? 'Auto-barrido terminado.' : 'Hoja completa.'));
   }
   function stop(text) {
     scanning = false;
     if (src && src !== cam) { src.pause(); URL.revokeObjectURL(src.src); }
     src = null;
     try { wakeLock?.release(); } catch {} wakeLock = null;
+    if (auto) { $('pos').value = savedPos; $('pos').dispatchEvent(new Event('input')); }
     // recortar lo que no se llegó a llenar
     if (filled && filled < total) {
       const c = document.createElement('canvas');
@@ -310,7 +339,7 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     go.textContent = scanning ? 'Detener' : (filled ? 'Escanear de nuevo' : 'Escanear');
     go.classList.toggle('stop', scanning);
     $('stat').classList.toggle('rec', scanning);
-    ['camSel','save','vidBtn','dir','thick','len'].forEach(id => $(id).disabled = scanning || (id === 'save' && !filled));
+    ['camSel','save','vidBtn','dir','thick','len','mode','dur','rev','pos'].forEach(id => $(id).disabled = scanning || (id === 'save' && !filled));
     $('save').classList.toggle('ready', !scanning && !!filled);
   }
 
@@ -344,7 +373,7 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
     msg('Pasando el video por el sensor…');
     v.onended = () => scanning && stop('Video terminado.');
     try { await v.play(); } catch { stop('No se pudo reproducir el video.'); return; }
-    loop(v, () => stop('Hoja completa.'));
+    loop(v, () => stop(auto ? 'Auto-barrido terminado.' : 'Hoja completa.'));
   };
 
   // El PNG se prepara apenas termina el scan: así el botón comparte al instante
