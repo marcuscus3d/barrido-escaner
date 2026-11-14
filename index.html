@@ -75,7 +75,7 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
 <div class="wrap">
   <header>
     <h1>Barrido <span>Escáner</span></h1>
-    <p>Una sola línea del sensor por cuadro, apilada como en un escáner de mano. Sin filtros.</p>
+    <p>Una sola línea del sensor por cuadro, apilada como en un escáner de mano. Sin filtros. <span style="font-family:var(--f-mono);font-size:12px;color:var(--glass)">v5</span></p>
   </header>
 
   <section style="min-width:0">
@@ -177,9 +177,9 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
       return false;
     }
     stopStream();
-    const devId = $('camSel').value;
+    const devId = $('camSel').value || savedCam();
     const video = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } };
-    if (devId) video.deviceId = { exact: devId }; else video.facingMode = { ideal: 'environment' };
+    if (devId) video.deviceId = { ideal: devId }; else video.facingMode = { ideal: 'environment' };
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
     } catch (e) {
@@ -201,6 +201,12 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
       $('zoomRow').hidden = false; z.dispatchEvent(new Event('input'));
     } else $('zoomRow').hidden = true;
     await listCameras(st.deviceId);
+    // primera vez (nada elegido todavía): arrancar en la 1× Principal en vez de una "Auto"
+    if (!savedCam() && !triedDefault) {
+      triedDefault = true;
+      const main = [...$('camSel').options].find(o => o.textContent === '1× Principal');
+      if (main && main.value !== st.deviceId) { $('camSel').value = main.value; return openCamera(); }
+    }
     if (!$('zoomRow').hidden) $('zoom').dispatchEvent(new Event('input'));
     $('stat').textContent = `${cam.videoWidth}×${cam.videoHeight} · ${Math.round(st.frameRate || 0) || '?'} fps`;
     $('stat').classList.remove('rec');
@@ -239,15 +245,9 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
         sel.appendChild(o);
       });
     if (currentId && devs.some(d => d.deviceId === currentId)) sel.value = currentId;
-    try { localStorage.setItem('barrido-cam', sel.value); } catch {}
   }
-  (async () => {   // si ya hubo permiso antes, mostrar las cámaras desde el principio
-    let saved = ''; try { saved = localStorage.getItem('barrido-cam') || ''; } catch {}
-    try {
-      const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput' && d.label);
-      if (devs.length) { await listCameras(saved); }
-    } catch {}
-  })();
+  let triedDefault = false;
+  function savedCam() { try { return localStorage.getItem('barrido-cam') || ''; } catch { return ''; } }
 
   // Prepara la hoja según el tamaño real del video y la orientación de la línea.
   function prepareSheet(vw, vh) {
@@ -399,6 +399,8 @@ select{font:14px var(--f-body);background:#232934;color:var(--fg);border:1px sol
 
   document.addEventListener('visibilitychange', () => { if (document.hidden && scanning) stop('Se pausó al salir de la página.'); });
   placeSlit();
+  // Pedir la cámara apenas se abre la página, así podés elegir el lente antes de escanear.
+  openCamera().then(ok => { if (ok) msg('Cámara lista. Elegí el lente y tocá Escanear.'); });
 })();
 </script>
 </body>
